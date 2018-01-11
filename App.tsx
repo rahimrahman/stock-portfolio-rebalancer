@@ -390,11 +390,12 @@ export default class App extends React.Component<any, AppState> {
             <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>{percentageOfPortfolio.toFixed(2)}%</Text>
           </View>
         </View>
+        {this.renderSeparatorLine()}
       </View>
     );
   }
 
-  renderDesiredPortfolioRow = (rowData: { item: PortfolioProps }) => {
+  renderDesiredPortfolioRow = (rowData: { item: DesiredPortfolioProps }) => {
     const { symbol, percentageOfPortfolio } = rowData.item;
     const { stockInfo } = this.state;
     let closeValue = 0.00;
@@ -417,8 +418,13 @@ export default class App extends React.Component<any, AppState> {
             <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>{percentageOfPortfolio.toFixed(2)}%</Text>
           </View>
         </View>
+        {this.renderSeparatorLine()}
       </View>
     );
+  }
+
+  renderSeparatorLine = () => {
+    return (<View style={{ alignSelf: 'stretch', height: 1, borderColor: '#dddddd', borderBottomWidth: 1 }} />);
   }
 
   renderDeltaQuantity = (deltaQuantity: number) => {
@@ -431,14 +437,14 @@ export default class App extends React.Component<any, AppState> {
 
 
   render() {
-    const { container, sectionContainer } = styles;
+    const { container, sectionContainer, sectionHeaderContainer } = styles;
     return (
       <ScrollView>
         <View style={container}>
           <View style={{ height: 64 }} />
 
           <View style={{ alignSelf: 'stretch' }}>
-            <View style={{ padding: 10 }}><Text style={{ textAlign: 'right' }}>YOUR PORTFOLIO</Text></View>
+            <View style={sectionHeaderContainer}><Text style={{ textAlign: 'right' }}>YOUR PORTFOLIO</Text></View>
             <FlatList
               data={this.state.userPortfolio}
               extraData={this.state}
@@ -454,6 +460,7 @@ export default class App extends React.Component<any, AppState> {
             <View style={{ flex: 1 }}><Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>${(this.state.overallMarketValue).toFixed(2)}</Text></View>
             <View style={{ flex: 1 }} />
           </View>
+          {this.renderSeparatorLine()}
 
           <View style={sectionContainer}>
             <Button title={this.state.calculating ? 'CALCULATING' : 'CALCULATE'} onPress={() => this.onCalculateButtonPress()} color={'blue'} />
@@ -461,13 +468,16 @@ export default class App extends React.Component<any, AppState> {
             <Button title={'REBALANCE'} onPress={() => this.onRebalanceButtonPress()} color={'blue'} />
           </View>
 
-          <FlatList
-            data={DESIRED_PORTFOLIO}
-            renderItem={(rowData) => this.renderDesiredPortfolioRow(rowData)}
-            keyExtractor={this.keyExtractor}
-            style={{ alignSelf: 'stretch' }}
-            scrollEnabled={false}
-          />
+          <View style={{ alignSelf: 'stretch' }}>
+            <View style={sectionHeaderContainer}><Text style={{ textAlign: 'right' }}>DESIRED PORTFOLIO</Text></View>
+            <FlatList
+              data={DESIRED_PORTFOLIO}
+              renderItem={(rowData) => this.renderDesiredPortfolioRow(rowData)}
+              keyExtractor={this.keyExtractor}
+              style={{ alignSelf: 'stretch' }}
+              scrollEnabled={false}
+            />
+          </View>
 
           <View style={sectionContainer}>
             <Button title={'RESET PORTFOLIO'} onPress={() => this.onResetButtonPress()} color={'blue'} />
@@ -494,5 +504,11 @@ const styles = StyleSheet.create({
   sectionContainer: {
     flexDirection: 'row',
     padding: 10
+  },
+  sectionHeaderContainer: {
+    padding: 10,
+    height: 30,
+    justifyContent: 'center',
+    backgroundColor: '#dddddd'
   }
 });
