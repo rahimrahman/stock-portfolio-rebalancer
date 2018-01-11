@@ -1,27 +1,30 @@
 import * as React from 'react';
 import {
   Button,
-  StyleSheet, 
+  StyleSheet,
   Text,
+  ScrollView,
   View,
+  SectionList,
   FlatList,
   TouchableHighlight,
-  Dimensions
+  Dimensions,
+  AsyncStorage
 } from 'react-native';
+import { SecureStore } from 'expo';
 
-const STARTING_STOCK = [
-  { symbol: "AAPL", quantity: 50, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 0 }, 
+const ORIGINAL_PORTFOLIO = [
+  { symbol: "AAPL", quantity: 50, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 0 },
   { symbol: "GOOG", quantity: 200, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 0 },
   { symbol: "CYBR", quantity: 150, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 0 },
   { symbol: "ABB", quantity: 900, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 0 },
 ];
 
-const REBALANCE_STOCK = [
-  { symbol: "AAPL", quantity: 0, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 22 },
-  { symbol: "GOOG", quantity: 0, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 38 },
-  { symbol: "GFN", quantity: 0, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 25 },
-  { symbol: "ACAD", quantity: 0, deltaQuantity: 0, marketValue: 0, percentageOfPortfolio: 15 },
-
+const DESIRED_PORTFOLIO = [
+  { symbol: "AAPL", percentageOfPortfolio: 22 },
+  { symbol: "GOOG", percentageOfPortfolio: 38 },
+  { symbol: "GFN", percentageOfPortfolio: 25 },
+  { symbol: "ACAD", percentageOfPortfolio: 15 },
 ];
 
 const ALPHA_ADVANTAGE_API_KEY = 'HDLQ3WL4C8ASYGCG';
@@ -34,11 +37,18 @@ interface PortfolioProps {
   percentageOfPortfolio: number
 }
 
+interface DesiredPortfolioProps {
+  symbol: string,
+  percentageOfPortfolio: number,
+};
+
 interface AppState {
+  calculating: boolean,
+  cashOnHand: number,
   overallMarketValue: number;
-  originalPortfolio: PortfolioProps[];
-  desiredPortfolio: PortfolioProps[];
-  stockInfo: { [name: string]: { closeValue: number }};
+  userPortfolio: PortfolioProps[];
+  desiredPortfolio: DesiredPortfolioProps[];
+  stockInfo: { [name: string]: { closeValue: number } };
 };
 
 export default class App extends React.Component<any, AppState> {
@@ -46,72 +56,98 @@ export default class App extends React.Component<any, AppState> {
     super(props);
 
     this.state = {
+      calculating: false,
+      cashOnHand: 0,
       overallMarketValue: 0,
-      originalPortfolio: STARTING_STOCK,
-      desiredPortfolio: REBALANCE_STOCK,
+      userPortfolio: this.deepClone(ORIGINAL_PORTFOLIO),
+      desiredPortfolio: this.deepClone(DESIRED_PORTFOLIO),
       stockInfo: {}
     }
   }
 
   onCalculateButtonPress = () => {
-    this.getRequiredStockDataForCurrentAndDesiredPortfolio();
+    this.getStockDataForCurrentAndDesiredPortfolio();
   }
 
   onRebalanceButtonPress = () => {
     this.rebalancePortfolio();
   }
 
-  getRequiredStockDataForCurrentAndDesiredPortfolio = () => {
+  onResetButtonPress = () => {
+    this.setState({ userPortfolio: ORIGINAL_PORTFOLIO.slice(0) }, () => console.log(this.state.userPortfolio));
+  }
+
+  onUpdateStockDataButtonPress = () => {
+    const { stockInfo } = this.state;
+
+    Object.keys(stockInfo).map(symbol => {
+      SecureStore.deleteItemAsync(`AA_RESPONSE_${symbol}`);
+    });
+
+    this.setState({ stockInfo: {} });
+  }
+
+  getStockDataForCurrentAndDesiredPortfolio = () => {
     // we make this a promise because we need to get the closing value (closeValue) so that we
     // can figure out the percentage of the stock in the portfolio.
     // the percentage of stock in portfolio is the market value of each stock (quantity * closing value)
     // divide by the overall market value
 
     return new Promise((resolve, reject) => {
-      const { originalPortfolio, desiredPortfolio } = this.state;
-      let originalPortfolioCounter: number = 0;
+      const { userPortfolio, desiredPortfolio } = this.state;
+      let userPortfolioCounter: number = 0;
       let overallMarketValue: number = 0;
-  
-      originalPortfolio.map((item, index) => {
+
+      this.setState({ calculating: true });
+
+      userPortfolio.map((item, index) => {
         const { symbol } = item;
         this.fetchStock(symbol)
           .then(() => {
             const { stockInfo } = this.state;
             const marketValue: number = Number((item.quantity * stockInfo[symbol].closeValue).toFixed(2));
             overallMarketValue = overallMarketValue + marketValue;
-  
+
             item['marketValue'] = marketValue;
-            originalPortfolio[index] = item;
-  
+            userPortfolio[index] = item;
+
             // the market value for each stock and tallied overall market value
             console.log(
-              `${symbol}:: ${item.quantity} * ${stockInfo[symbol].closeValue} = ${marketValue}`,
-              `Overall Market Value = ${overallMarketValue}`
+              `${symbol}:: ${item.quantity} * ${stockInfo[symbol].closeValue} = ${marketValue}`
             );
-  
-            originalPortfolioCounter++;
-            if (originalPortfolioCounter === originalPortfolio.length) {
-              this.setState({ overallMarketValue, originalPortfolio }, () => this.calculatePercentageOfPortfolio());
+
+            userPortfolioCounter++;
+            if (userPortfolioCounter === userPortfolio.length) {
+              this.setState({ overallMarketValue, userPortfolio }, () => this.calculatePercentageOfPortfolio());
+
 
               let desiredPortfolioCounter = 0;
-  
-              desiredPortfolio.map((item, index) => {
-                // we might as well start getting data about stocks in our desired portfolio.
-                this.fetchStock(item.symbol)
-                  .then(() => {
-                    desiredPortfolioCounter++;
-                    if (desiredPortfolioCounter === desiredPortfolio.length) {
-                      resolve();
-                    }
-                  })
-                  .catch((err) => {
-                    console.log(err);
-                    reject(err);
-                  });
-              });
+
+              if (desiredPortfolio.length > 0) {
+                desiredPortfolio.map((item, index) => {
+                  // we might as well start getting data about stocks in our desired portfolio.
+                  this.fetchStock(item.symbol)
+                    .then(() => {
+                      desiredPortfolioCounter++;
+                      if (desiredPortfolioCounter === desiredPortfolio.length) {
+                        this.setState({ calculating: false });
+                        resolve();
+                      }
+                    })
+                    .catch((err) => {
+                      this.setState({ calculating: false });
+                      console.log(err);
+                      reject(err);
+                    });
+                });
+              } else {
+                this.setState({ calculating: false });
+                resolve();
+              }
             }
           })
           .catch((err) => {
+            this.setState({ calculating: false });
             console.log(err);
             reject(err)
           });
@@ -125,61 +161,78 @@ export default class App extends React.Component<any, AppState> {
     return new Promise((resolve, reject) => {
       if (typeof stockInfo[symbol] !== 'undefined') resolve(); // skip if we already have the data
       else {
-        fetch(`https://www.alphavantage.co/query?apikey=${ALPHA_ADVANTAGE_API_KEY}&function=TIME_SERIES_DAILY_ADJUSTED&symbol=${symbol}`, {
-          method: 'GET'
-        })
-          .then((response) => response.json())
-          .then((responseJson) => {
-            // console.log(responseJson);
-            const lastRefreshed: string = responseJson['Meta Data']['3. Last Refreshed'].split(' ')[0];
-            const latestFromTimeSeries: string = responseJson['Time Series (Daily)'][`${lastRefreshed}`];
-            const closeValue: number = Number(responseJson['Time Series (Daily)'][`${lastRefreshed}`]['4. close']);
-  
-            stockInfo[symbol] = { closeValue };
+        // 
+        SecureStore.getItemAsync(`AA_RESPONSE_${symbol}`)
+          .then((stringifiedResponseJson: string) => {
+            stockInfo[symbol] = { closeValue: this.getCloseValueFromStockResponse(stringifiedResponseJson) };
             this.setState({ stockInfo }, () => resolve());
           })
-          .catch((err) => {
-            reject(err);
-          })
+          .catch(() => {
+            fetch(`https://www.alphavantage.co/query?apikey=${ALPHA_ADVANTAGE_API_KEY}&function=TIME_SERIES_DAILY_ADJUSTED&symbol=${symbol}`, {
+              method: 'GET'
+            })
+              .then((response) => response.json())
+              .then((responseJson) => {
+                const stringifiedResponseJson = JSON.stringify(responseJson);
+                SecureStore.setItemAsync(`AA_RESPONSE_${symbol}`, stringifiedResponseJson);
+                stockInfo[symbol] = { closeValue: this.getCloseValueFromStockResponse(stringifiedResponseJson) };
+                this.setState({ stockInfo }, () => resolve());
+              })
+              .catch((err) => {
+                reject(err);
+              })
+          });
       }
     })
   }
 
+  getCloseValueFromStockResponse = (stringifiedJson: string) => {
+    const responseJson = JSON.parse(stringifiedJson);
+
+    const lastRefreshed: string = responseJson['Meta Data']['3. Last Refreshed'].split(' ')[0];
+    const latestFromTimeSeries: string = responseJson['Time Series (Daily)'][`${lastRefreshed}`];
+    const closeValue: number = Number(responseJson['Time Series (Daily)'][`${lastRefreshed}`]['4. close']);
+
+    return closeValue;
+  }
+
   calculatePercentageOfPortfolio = () => {
-    const { originalPortfolio, overallMarketValue } = this.state;
+    const { userPortfolio, overallMarketValue } = this.state;
+    let userPortfolioCounter = 0;
 
-    originalPortfolio.map((item, index) => {
+    userPortfolio.map((item, index) => {
       item['percentageOfPortfolio'] = item.marketValue / overallMarketValue * 100;
-      originalPortfolio[index] = item;
+      userPortfolio[index] = item;
 
-      this.setState({ originalPortfolio });
+      userPortfolioCounter++;
+      if (userPortfolioCounter >= userPortfolio.length) this.setState({ userPortfolio });
     })
   }
 
   rebalancePortfolio = () => {
     // 1. we need to know the current percentage of stocks in our portfolio
-    this.getRequiredStockDataForCurrentAndDesiredPortfolio()
+    this.getStockDataForCurrentAndDesiredPortfolio()
       .then(() => {
         // 2. go through original portfolio and trade based on if the desired portfolio
         // requires the stock to added, traded away, or dump completely.
-        const { desiredPortfolio, originalPortfolio, stockInfo, overallMarketValue } = this.state;
-        let newPortfolio = originalPortfolio;
-        const originalOverallMarketValue = overallMarketValue;
-        let newOverallMarketValue = overallMarketValue;
-    
-        originalPortfolio.map((item, index) => {
+        // TODO: has to be a cleaner way to do this!
+        const { desiredPortfolio, userPortfolio, stockInfo, overallMarketValue } = this.state;
+        let newPortfolio = userPortfolio;
+        let cashOnHand = 0;
+
+        userPortfolio.map((item, index) => {
           const { symbol, percentageOfPortfolio, quantity, marketValue } = item;
           const { closeValue } = stockInfo[symbol];
           let deltaQuantity = 0;
-          let newQuantity   = 0;
+          let newQuantity = 0;
           let newPercentageOfPortfolio = 0;
           let newMarketValue = 0;
-    
+
           const currentDesiredStock = desiredPortfolio.find((x) => x.symbol === symbol);
           if (typeof currentDesiredStock === 'undefined') {
             // dump all for stocks that are not in the desired portfolio
             deltaQuantity = -(item.quantity);
-            newOverallMarketValue = newOverallMarketValue - marketValue;
+            cashOnHand = cashOnHand + marketValue;
             newQuantity = 0;
           } else {
             // trade existing stocks to the new percentage of portfolio based
@@ -187,144 +240,249 @@ export default class App extends React.Component<any, AppState> {
             const deltaPercentageOfPortfolio = currentDesiredStock.percentageOfPortfolio - percentageOfPortfolio;
             deltaQuantity = this.calculateDeltaQuantityFromDeltaPercentage(
               (deltaPercentageOfPortfolio / 100),
-              originalOverallMarketValue,
+              overallMarketValue,
               closeValue
             );
 
             // deltaQuantity can be a positive or negative integer. Buy === positive, Sell === negative
             newQuantity = quantity + deltaQuantity;
             newMarketValue = (newQuantity * closeValue)
-            newOverallMarketValue = newOverallMarketValue - marketValue + newMarketValue;
-            newPercentageOfPortfolio = newQuantity * closeValue * 100 / originalOverallMarketValue;
+            cashOnHand = cashOnHand + marketValue - newMarketValue;
+            newPercentageOfPortfolio = newQuantity * closeValue * 100 / overallMarketValue;
           }
 
-          newPortfolio[index] = this.createStockData({
+          newPortfolio = this.mutatePortfolio(newPortfolio, {
             symbol,
             quantity: newQuantity,
             deltaQuantity,
             marketValue: newMarketValue,
             percentageOfPortfolio: newPercentageOfPortfolio
           });
-
-          console.log(newOverallMarketValue);
         });
-    
+
         desiredPortfolio.map((item, index) => {
           const { symbol, percentageOfPortfolio } = item;
-          const existingStock = originalPortfolio.find((x) => x.symbol === symbol);
+          const existingStock = userPortfolio.find((x) => x.symbol === symbol);
           if (typeof existingStock === 'undefined') {
             const newQuantity = this.calculateDeltaQuantityFromDeltaPercentage(
               (percentageOfPortfolio / 100),
               overallMarketValue,
               stockInfo[symbol].closeValue);
-              
+
             const newMarketValue = newQuantity * stockInfo[symbol].closeValue;
-            console.log(`${newQuantity} * ${stockInfo[symbol].closeValue} = ${newMarketValue}`);
-            newOverallMarketValue = newOverallMarketValue + newMarketValue;
-            newPortfolio.push(
-              this.createStockData({
-                symbol, 
-                quantity: newQuantity, 
-                deltaQuantity: newQuantity, 
-                marketValue: newMarketValue,
-                percentageOfPortfolio: (newMarketValue / overallMarketValue) * 100,
-              }));
+            cashOnHand = cashOnHand - newMarketValue;
+
+            // console.log(`${newQuantity} * ${stockInfo[symbol].closeValue} = ${newMarketValue}`);
+
+            newPortfolio = this.mutatePortfolio(newPortfolio, {
+              symbol,
+              quantity: newQuantity,
+              deltaQuantity: newQuantity,
+              marketValue: newMarketValue,
+              percentageOfPortfolio: (newMarketValue / overallMarketValue) * 100,
+            });
           }
         });
-    
-        console.log(newPortfolio, newOverallMarketValue - originalOverallMarketValue);
-        this.setState({ originalPortfolio: newPortfolio });
+
+        this.setState({ userPortfolio: newPortfolio }, () => {
+          // 3. Let's see if we can buy more stocks with the cash on hand.
+          if (cashOnHand > 0) newPortfolio = this.tradeWithCashOnHand(cashOnHand, newPortfolio, 0, 0);
+        });
       });
   }
 
-  createStockData = (props: PortfolioProps) => {
-    // symbol: string, quantity: number, deltaQuantity: number, marketValue: number, percentageOfPortfolio: number
-    const { symbol, quantity, deltaQuantity, marketValue, percentageOfPortfolio } = props;
-    return { symbol, quantity, deltaQuantity, marketValue, percentageOfPortfolio };
+
+  tradeWithCashOnHand = (cashOnHand: number, portfolio: PortfolioProps[], portfolioIndex: number, failed: number): any => {
+    // Recursive function.  Will go through each desired portfolio and buy 1 stock at a time until 
+    // cash on hand can't buy anything anymore.
+    const { stockInfo, desiredPortfolio, overallMarketValue } = this.state;
+    const currentStock = portfolio[portfolioIndex];
+    const { symbol, quantity, deltaQuantity, marketValue, percentageOfPortfolio } = currentStock;
+
+    if (stockInfo[symbol].closeValue < cashOnHand && typeof desiredPortfolio.find((x) => x.symbol === symbol) !== 'undefined') {
+      const quantityToTrade = 1;
+      const newQuantity = quantity + quantityToTrade;
+      const newDeltaQuantity = deltaQuantity + quantityToTrade;
+      const newMarketValue = newQuantity * stockInfo[symbol].closeValue;
+      portfolio = this.mutatePortfolio(portfolio, {
+        symbol,
+        quantity: newQuantity,
+        deltaQuantity: newDeltaQuantity,
+        marketValue: newMarketValue,
+        percentageOfPortfolio: (newMarketValue / overallMarketValue) * 100,
+      });
+
+      cashOnHand = cashOnHand - stockInfo[symbol].closeValue;
+      failed = 0;
+    }
+    else failed++;
+
+    portfolioIndex++;
+    if (portfolioIndex >= portfolio.length) portfolioIndex = 0;
+    if (failed === portfolio.length) return portfolio;
+    if (cashOnHand > 0) this.tradeWithCashOnHand(cashOnHand, portfolio, portfolioIndex, failed);
   }
 
-  calculateDeltaQuantityFromDeltaPercentage = (percentageOfPortfolio: number, overallMarketValue: number, closeValue: number) => {
-    // console.log(Math.floor(percentageOfPortfolio * overallMarketValue / closeValue), this.roundDown((percentageOfPortfolio * overallMarketValue / closeValue), 0));
-    return Math.floor(percentageOfPortfolio * overallMarketValue / closeValue);
+  mutatePortfolio = (portfolio: PortfolioProps[], portfolioProps: PortfolioProps) => {
+    const { symbol, quantity, deltaQuantity, marketValue, percentageOfPortfolio } = portfolioProps;
+    const portfolioIndex = portfolio.findIndex((p) => p.symbol === symbol);
+
+    if (portfolioIndex !== -1) {
+      portfolio[portfolioIndex] = { symbol, quantity, deltaQuantity, marketValue, percentageOfPortfolio };
+    } else {
+      portfolio.push({ symbol, quantity, deltaQuantity, marketValue, percentageOfPortfolio });
+    }
+
+    return portfolio;
+  }
+
+  calculateDeltaQuantityFromDeltaPercentage = (percentageOfPortfolio: number, overallMarketValue: number, closeValue: number) =>
+    Math.floor(percentageOfPortfolio * overallMarketValue / closeValue);
+
+
+  deepClone = (arr: {}[]): any => {
+    const out: PortfolioProps[] = [];
+    for (var i = 0, len = arr.length; i < len; i++) {
+      const item: any = arr[i];
+      const obj: any = {};
+      for (var k in item) {
+        obj[k] = item[k];
+      }
+      out.push(obj);
+    }
+    return out;
   }
 
   roundDown = (value: number, decimals: number) => {
-    return Number(Math.round(value * 10**decimals) / 10**decimals);
+    return Number(Math.round(value * 10 ** decimals) / 10 ** decimals);
   }
 
-  keyExtractor = (item: { symbol: string }, index:number) => item.symbol;
-  
-  renderRow = (rowData: { item: PortfolioProps }) => {
+  keyExtractor = (item: { symbol: string }, index: number) => item.symbol;
+
+  //
+  // RENDER
+  //
+
+  renderPortfolioRow = (rowData: { item: PortfolioProps }) => {
     const { symbol, quantity, deltaQuantity, percentageOfPortfolio, marketValue } = rowData.item;
     const { stockInfo } = this.state;
     let closeValue = 0.00;
-    if (typeof stockInfo[symbol] !== 'undefined') closeValue = stockInfo[symbol].closeValue; 
+    if (typeof stockInfo[symbol] !== 'undefined') closeValue = stockInfo[symbol].closeValue;
 
     return (
-      <TouchableHighlight
-        onPress={() => console.log('pressed')}
-        style={{ flex: 1, borderColor: '#000000', borderWidth: 1 }}
-      >
-        <View>
-          <View style={{ flex: 1, flexDirection: 'row', padding: 5 }}>
-            <View style={{ flex: 1 }}>
-              <View>
-                <Text style={{ alignSelf: 'stretch', textAlign: 'left' }}>{symbol}</Text>
-              </View>
-              <View>
-                <Text>{closeValue === 0 ? '' : closeValue.toFixed(2)}</Text>
-              </View>
+      <View>
+        <View style={styles.sectionContainer}>
+          <View style={{ flex: 1 }}>
+            <View>
+              <Text style={{ alignSelf: 'stretch', textAlign: 'left' }}>{symbol}</Text>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>{quantity} {this.renderDeltaQuantity(deltaQuantity)}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>${marketValue.toFixed(2)}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>{percentageOfPortfolio.toFixed(2)}%</Text>
+            <View>
+              <Text>{closeValue === 0 ? '' : closeValue.toFixed(2)}</Text>
             </View>
           </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>{quantity} {this.renderDeltaQuantity(deltaQuantity)}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>${marketValue.toFixed(2)}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>{percentageOfPortfolio.toFixed(2)}%</Text>
+          </View>
         </View>
-      </TouchableHighlight>
-    )
+      </View>
+    );
+  }
+
+  renderDesiredPortfolioRow = (rowData: { item: PortfolioProps }) => {
+    const { symbol, percentageOfPortfolio } = rowData.item;
+    const { stockInfo } = this.state;
+    let closeValue = 0.00;
+    if (typeof stockInfo[symbol] !== 'undefined') closeValue = stockInfo[symbol].closeValue;
+
+    return (
+      <View>
+        <View style={styles.sectionContainer}>
+          <View style={{ flex: 1 }}>
+            <View>
+              <Text style={{ alignSelf: 'stretch', textAlign: 'left' }}>{symbol}</Text>
+            </View>
+            <View>
+              <Text>{closeValue === 0 ? '' : closeValue.toFixed(2)}</Text>
+            </View>
+          </View>
+          <View style={{ flex: 1 }} />
+          <View style={{ flex: 1 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>{percentageOfPortfolio.toFixed(2)}%</Text>
+          </View>
+        </View>
+      </View>
+    );
   }
 
   renderDeltaQuantity = (deltaQuantity: number) => {
     if (deltaQuantity > 0) {
       return (<Text style={{ color: 'green' }}>({deltaQuantity})</Text>);
-    } else if (deltaQuantity < 0) return ( <Text style={{ color: 'red' }}>({deltaQuantity})</Text>);
+    } else if (deltaQuantity < 0) return (<Text style={{ color: 'red' }}>({deltaQuantity})</Text>);
 
     return (<Text>({deltaQuantity})</Text>);
   }
-  
+
+
   render() {
+    const { container, sectionContainer } = styles;
     return (
-      <View style={styles.container}>
-        <View style={{ height: 100 }} />
-        <FlatList
-          data={this.state.originalPortfolio}
-          extraData={this.state}
-          renderItem={(rowData) => this.renderRow(rowData)}
-          keyExtractor={this.keyExtractor}
-          style={{ flex: 1, alignSelf: 'stretch' }}
-        />
+      <ScrollView>
+        <View style={container}>
+          <View style={{ height: 64 }} />
 
-        <Text>{(this.state.overallMarketValue).toFixed(2)}</Text>
+          <View style={{ alignSelf: 'stretch' }}>
+            <View style={{ padding: 10 }}><Text style={{ textAlign: 'right' }}>YOUR PORTFOLIO</Text></View>
+            <FlatList
+              data={this.state.userPortfolio}
+              extraData={this.state}
+              renderItem={(rowData) => this.renderPortfolioRow(rowData)}
+              keyExtractor={this.keyExtractor}
+              style={{ alignSelf: 'stretch' }}
+              scrollEnabled={false}
+            />
+          </View>
 
-        <Button title={'CALCULATE'} onPress={() => this.onCalculateButtonPress()} color={'red'} />
-        <Button title={'REBALANCE'} onPress={() => this.onRebalanceButtonPress()} color={'red'} />
+          <View style={sectionContainer}>
+            <View style={{ flex: 2 }}><Text>TOTAL</Text></View>
+            <View style={{ flex: 1 }}><Text style={{ alignSelf: 'stretch', textAlign: 'right' }}>${(this.state.overallMarketValue).toFixed(2)}</Text></View>
+            <View style={{ flex: 1 }} />
+          </View>
 
-        <FlatList
-          data={REBALANCE_STOCK}
-          renderItem={(rowData) => this.renderRow(rowData)}
-          keyExtractor={this.keyExtractor}
-          style={{ flex: 1, alignSelf: 'stretch' }}
-        />
-      </View>
+          <View style={sectionContainer}>
+            <Button title={this.state.calculating ? 'CALCULATING' : 'CALCULATE'} onPress={() => this.onCalculateButtonPress()} color={'blue'} />
+            <View style={{ width: 5 }} />
+            <Button title={'REBALANCE'} onPress={() => this.onRebalanceButtonPress()} color={'blue'} />
+          </View>
+
+          <FlatList
+            data={DESIRED_PORTFOLIO}
+            renderItem={(rowData) => this.renderDesiredPortfolioRow(rowData)}
+            keyExtractor={this.keyExtractor}
+            style={{ alignSelf: 'stretch' }}
+            scrollEnabled={false}
+          />
+
+          <View style={sectionContainer}>
+            <Button title={'RESET PORTFOLIO'} onPress={() => this.onResetButtonPress()} color={'blue'} />
+            <View style={{ width: 5 }} />
+            <Button title={'RESET STOCK DATA'} onPress={() => this.onUpdateStockDataButtonPress()} color={'blue'} />
+          </View>
+        </View>
+      </ScrollView>
     );
   }
 }
+
+//
+// Component Styles
+//
 
 const styles = StyleSheet.create({
   container: {
@@ -333,4 +491,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  sectionContainer: {
+    flexDirection: 'row',
+    padding: 10
+  }
 });
